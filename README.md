@@ -33,26 +33,6 @@ The generator constructs new rules by:
 3. Building chains up to specified maximum length
 4. Applying probability thresholds to prune unlikely chains
 
-### Control Parameters
-
-- **Probability (-p)**
-  - Controls chain acceptance threshold
-  - Rule generation stops as soon as probability of the next transition drops below threshold
-  - Higher values (e.g. 0.1) = fewer, more likely rules
-  - Lower values (e.g. 0.01) = more rules, including rarer patterns
-  - Default 0.0 = generate all possible chains
-
-- **Starting Operations (-l)**
-  - Limits initial operations to top N most frequent
-  - Helps focus on most effective patterns
-  - Can be combined with -p for refined output
-  - Example: `-l 200 -p 0.05` uses top 200 starters with 5% probability threshold
-
-- **Length Control (-m/-M)**
-  - Sets minimum (-m) and maximum (-M) operations per rule
-  - Example: `T0s5s` counts as 2 operations
-  - Helps target specific rule complexity levels
-  - Useful for balancing coverage vs performance
 
 ## Basic Usage
 
@@ -95,6 +75,27 @@ rule_chain_generator <rulefile1> [rulefile2] [options]
 
 * `-h, --help`
   - Displays help message with usage information
+
+### Control Parameters
+
+- **Probability (-p)**
+  - Controls chain acceptance threshold
+  - Rule generation stops as soon as probability of the next transition drops below threshold
+  - Higher values (e.g. 0.1) = fewer, more likely rules
+  - Lower values (e.g. 0.01) = more rules, including rarer patterns
+  - Default 0.0 = generate all possible chains
+
+- **Starting Operations (-l)**
+  - Limits initial operations to top N most frequent
+  - Helps focus on most effective patterns
+  - Can be combined with -p for refined output
+  - Example: `-l 200 -p 0.05` uses top 200 starters with 5% probability threshold
+
+- **Length Control (-m/-M)**
+  - Sets minimum (-m) and maximum (-M) operations per rule
+  - Example: `T0s5s` counts as 2 operations
+  - Helps target specific rule complexity levels
+  - Useful for balancing coverage vs performance
 
 ## Example Usage
 
