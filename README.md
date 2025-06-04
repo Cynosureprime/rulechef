@@ -8,7 +8,7 @@ A powerful tool for analyzing and generating rule chains using Markov chains and
 rulechef performs multi-stage analysis of input rules:
 
 1. **Rule Validation**
-   - Rules are roughly validated (full validation is not carried)
+   - Rules are roughly validated (full validation is not carried out)
    - Parses rules in hashcat/JtR/MDXfind format
    - Performs basic validation of operation syntax
    - Invalid rules are rejected but processing continues
@@ -64,7 +64,8 @@ rule_chain_generator <rulefile1> [rulefile2] [options]
   - Lower values allow more novel but potentially less common combinations
 
 * `-l N, --limit N`
-  - Limits initial chain analysis to top N most frequent operations
+  - Limits initial operation (begining of the chain) to top N most frequent operations
+  - Transitions after the inital operation are still carried out in full
   - Useful for focusing generation on most common patterns
   - Can significantly improve performance with large rule sets
 
