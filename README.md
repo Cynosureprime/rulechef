@@ -65,7 +65,7 @@ rule_chain_generator <rulefile1> [rulefile2] [options]
 
 * `-l N, --limit N`
   - Limits initial operation (begining of the chain) to top N most frequent operations
-  - Transitions after the inital operation are still carried out in full
+  - Transitions after the inital operation are still carried out until -p threshhold
   - Useful for focusing generation on most common patterns
   - Can significantly improve performance with large rule sets
 
