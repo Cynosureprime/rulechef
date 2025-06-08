@@ -13,11 +13,8 @@ unsigned int hashNGram(CompleteOperation *ops, long op_count, int hash_size);
 unsigned int hash(char *str);
 
 // Transition hash table functions
-TransitionHashNode* findTransition(CompleteOperation *from_op, CompleteOperation *to_op);
-void addOperationTransitionHashed(CompleteOperation *from_op, CompleteOperation *to_op);
-void hashTableToTransitionArray();
-void calculateTransitionProbabilitiesDirectly();
-void printHashTableStats();
+void addStarterOperationHashed(CompleteOperation *op);
+
 
 // N-gram hash table functions
 NGramHashNode* findNGram(CompleteOperation *ops, long op_count);
@@ -29,11 +26,8 @@ void addTrigramHashed(CompleteOperation *ops);
 // Extraction functions
 OperationNGram* extractNGramsFromHashTable(NGramHashNode **hash_table, int hash_size, int ngram_type, int *total_count);
 OperationNGram* getSortedUnigramsFromHashTable(int *count, int limit_unigrams);
-OperationTransition* getAllTransitionsFromHashTable(long *count);
 
-// Rule deduplication hash table functions
-int ruleExists(char *rule_string);
-void addRuleToHash(char *rule_string);
+
 
 // Count functions
 long getUnigramCountFromHashTable();
@@ -44,7 +38,7 @@ long getTransitionCountFromHashTable();
 // Statistics and debugging
 void printTopNGramsFromHashTable();
 void printAllNGramHashTableStats();
-
+void calculateBigramProbabilities();
 // Comparison functions
 int compareNGramsByFrequency(const void *a, const void *b);
 

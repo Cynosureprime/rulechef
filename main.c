@@ -10,7 +10,7 @@
 #include "rule_parser.h"
 #include "hash_tables.h"
 #include "analysis.h"
-
+#include <Judy.h>
 
 extern long unigram_count;
 extern long transition_count;
@@ -25,6 +25,7 @@ void show_help(const char *program_name) {
     fprintf(stderr, "\t-m N, --min-length N       Minimum rule length (operations) (default: 1)\n");
     fprintf(stderr, "\t-M N, --max-length N       Maximum rule length (operations) (default: 6)\n");
     fprintf(stderr, "\t-l N, --limit N            Limit starting chain to TopN (can be used with -p)\n");
+    fprintf(stderr, "\t                           If N is less than 1 and greater than 0, then TopN percent\n");
     fprintf(stderr, "\t-p X, --probability X      Minimum probability threshold (0.0-1.0) (default: 0.0)\n");
     fprintf(stderr, "\t-v, --verbose              Verbose mode (show analysis and statistics)\n");
     fprintf(stderr, "\t-h, --help                 Show this help message\n\n");
@@ -48,7 +49,7 @@ int main(int argc, char *argv[]) {
     int min_length = 1;
     double min_probability = 0.0;
     int verbose = 0;
-    int limit_unigrams = 0;
+    double limit_unigrams = 0;
 
 
     int c;
@@ -95,9 +96,10 @@ int main(int argc, char *argv[]) {
             }
             break;
         case 'l':
-            limit_unigrams = atoi(optarg);
+            limit_unigrams = atof(optarg);
             if (limit_unigrams < 0 || limit_unigrams > 65535) {
                 fprintf(stderr, "Limit to top N chains cannot be negative or greater than 65535\n");
+                fprintf(stderr, "If N is less than 1 and greater than 0, then TopN percent\n");
                 return 1;
             }
             break;
@@ -140,7 +142,7 @@ int main(int argc, char *argv[]) {
         printf("  Min length: %d\n", min_length);
         printf("  Max length: %d\n", max_length);
         printf("  Min probability: %.3f\n", min_probability);
-        printf("  Limit unigrams: %d\n", limit_unigrams);
+        printf("  Limit unigrams: %.2f\n", limit_unigrams);
         printf("  Verbose: %s\n", verbose ? "enabled" : "disabled");
         printf("\n");
     }
@@ -158,7 +160,7 @@ int main(int argc, char *argv[]) {
         }
         fprintf(stderr, "Rule length range: %d-%d operations\n", min_length, max_length);
         fprintf(stderr, "Minimum probability threshold: %.3f\n", min_probability);
-        fprintf(stderr, "Limit chain start TopN: %d\n", limit_unigrams);
+        fprintf(stderr, "Limit chain start TopN: %.2f\n", limit_unigrams);
         fprintf(stderr, "Output buffer size: %.2f MB\n", (double)WriteBufferSize / (1024 * 1024));
     }
 

@@ -3,29 +3,115 @@
 #include "rule_parser.h"
 
 // Global hash tables
-TransitionHashNode **transition_hash_table = NULL;
 NGramHashNode **unigram_hash_table = NULL;
 NGramHashNode **bigram_hash_table = NULL;
 NGramHashNode **trigram_hash_table = NULL;
 HashNode *hash_table[HASH_SIZE] = {NULL};
+NGramHashNode **starter_hash_table = NULL;
+
+static double hm_threshold = 0.90; // Resize on 90% capcacity
+int curr_size_idx = 0;
+int max_operation_count[4];
+int op_prime_idx[4];
+
+//Pre-computed primes which roughly double
+static const int prime_sizes[] = {
+    1048573,
+    2097143,
+    4194301,
+    8388593,
+    16777213,
+    33554393,
+    67108859,
+    134217689,
+    268435399,
+    536870909,
+    1073741827,
+    0
+};
+
+static NodePool *ngram_pool = NULL;
 
 // Global counters
 extern long unigram_count;
 extern long bigram_count;
 extern long trigram_count;
 extern long transition_count;
+extern long start_counter;
+
+// Contiguous block of nodes for allocation
+void initNodePool() {
+    ngram_pool = malloc(sizeof(NodePool));
+    if (!ngram_pool) {
+        fprintf(stderr, "Failed to allocate node pool\n");
+        exit(1);
+    }
+
+    ngram_pool->nodes = malloc(POOL_BLOCK_SIZE * sizeof(NGramHashNode));
+    if (!ngram_pool->nodes) {
+        fprintf(stderr, "Failed to allocate node pool block\n");
+        exit(1);
+    }
+
+    ngram_pool->used_in_block = 0;
+    ngram_pool->block_size = POOL_BLOCK_SIZE;
+    ngram_pool->next_block = NULL;
+}
+
+NGramHashNode* allocateNGramNode() {
+    // Check if we need a new block
+    //fprintf(stderr,"used %ld size %ld\n",ngram_pool->used_in_block,ngram_pool->block_size);
+    if (ngram_pool->used_in_block >= ngram_pool->block_size) {
+        // Allocate a new block
+
+        NodePool *new_block = malloc(sizeof(NodePool));
+        if (!new_block) {
+            fprintf(stderr, "Failed to allocate new node pool block\n");
+            return NULL;
+        }
+
+        new_block->nodes = malloc(POOL_BLOCK_SIZE * sizeof(NGramHashNode));
+        if (!new_block->nodes) {
+            fprintf(stderr, "Failed to allocate new node pool block memory\n");
+            free(new_block);
+            return NULL;
+        }
+
+        new_block->used_in_block = 0;
+        new_block->block_size = POOL_BLOCK_SIZE;
+        new_block->next_block = ngram_pool;
+        ngram_pool = new_block;
+    }
+
+    // Return next available node
+    NGramHashNode *node = &ngram_pool->nodes[ngram_pool->used_in_block];
+    ngram_pool->used_in_block++;
+    return node;
+}
 
 void initHashTables() {
-    transition_hash_table = calloc(TRANSITION_HASH_SIZE, sizeof(TransitionHashNode*));
-    unigram_hash_table = calloc(UNIGRAM_HASH_SIZE, sizeof(NGramHashNode*));
-    bigram_hash_table = calloc(BIGRAM_HASH_SIZE, sizeof(NGramHashNode*));
-    trigram_hash_table = calloc(TRIGRAM_HASH_SIZE, sizeof(NGramHashNode*));
 
-    if (!transition_hash_table || !unigram_hash_table || !bigram_hash_table || !trigram_hash_table) {
+    // Possibly use a loop for larger tables, for now it's fine.
+    op_prime_idx[1] = 0;
+    op_prime_idx[2] = 0;
+    op_prime_idx[3] = 0;
+    max_operation_count[1] = UNIGRAM_HASH_SIZE;
+    max_operation_count[2] = prime_sizes[op_prime_idx[2]];
+    max_operation_count[3] = prime_sizes[op_prime_idx[3]];
+
+    unigram_hash_table = calloc(UNIGRAM_HASH_SIZE, sizeof(NGramHashNode*)); // Uneeded to be dynamic, not expected to hit cap
+    bigram_hash_table = calloc(max_operation_count[2], sizeof(NGramHashNode*));
+    trigram_hash_table = calloc(max_operation_count[3], sizeof(NGramHashNode*)); // Unused
+    starter_hash_table = calloc(STARTER_HASH_SIZE, sizeof(NGramHashNode*)); // Uneeded to be dynamic, not expected to hit cap
+
+    if (!unigram_hash_table || !bigram_hash_table ||
+        !trigram_hash_table || !starter_hash_table) {
         fprintf(stderr, "Failed to allocate hash tables\n");
         exit(1);
     }
+    initNodePool();
 }
+
 
 static void freeNGramHashTable(NGramHashNode **table, int size) {
     if (table) {
@@ -42,29 +128,21 @@ static void freeNGramHashTable(NGramHashNode **table, int size) {
 }
 
 void freeHashTables() {
-    // Free transition hash table
-    if (transition_hash_table) {
-        for (int i = 0; i < TRANSITION_HASH_SIZE; i++) {
-            TransitionHashNode *node = transition_hash_table[i];
-            while (node) {
-                TransitionHashNode *temp = node;
-                node = node->next;
-                free(temp);
-            }
-        }
-        free(transition_hash_table);
-        transition_hash_table = NULL;
-    }
+
+
+    curr_size_idx = 0;
 
     // Free n-gram hash tables using the helper function
     freeNGramHashTable(unigram_hash_table, UNIGRAM_HASH_SIZE);
-    freeNGramHashTable(bigram_hash_table, BIGRAM_HASH_SIZE);
-    freeNGramHashTable(trigram_hash_table, TRIGRAM_HASH_SIZE);
+    freeNGramHashTable(bigram_hash_table, max_operation_count[2]);
+    freeNGramHashTable(trigram_hash_table, max_operation_count[3]);
+    freeNGramHashTable(starter_hash_table, STARTER_HASH_SIZE);
 
     // Set pointers to NULL after freeing
     unigram_hash_table = NULL;
     bigram_hash_table = NULL;
     trigram_hash_table = NULL;
+    starter_hash_table = NULL;
 
     // Free rule deduplication hash table
     for (int i = 0; i < HASH_SIZE; i++) {
@@ -78,23 +156,7 @@ void freeHashTables() {
     }
 }
 
-unsigned int hashTransition(CompleteOperation *from_op, CompleteOperation *to_op) {
-    unsigned int hash = 5381;
 
-    // Hash the from_op
-    const char *str1 = from_op->full_op;
-    while (*str1) {
-        hash = ((hash << 5) + hash) + *str1++;
-    }
-
-    // Combine with to_op hash
-    const char *str2 = to_op->full_op;
-    while (*str2) {
-        hash = ((hash << 5) + hash) + *str2++;
-    }
-
-    return hash % TRANSITION_HASH_SIZE;
-}
 
 unsigned int hashNGram(CompleteOperation *ops, long op_count, int hash_size) {
     unsigned int hash = 5381;
@@ -121,97 +183,88 @@ unsigned int hash(char *str) {
     return hash % HASH_SIZE;
 }
 
-// Find existing transition in hash table
-TransitionHashNode* findTransition(CompleteOperation *from_op, CompleteOperation *to_op) {
-    unsigned int index = hashTransition(from_op, to_op);
-    TransitionHashNode *node = transition_hash_table[index];
 
-    while (node != NULL) {
-        if (compareCompleteOps(&node->transition.from_op, from_op) &&
-            compareCompleteOps(&node->transition.to_op, to_op)) {
-            return node;
-        }
-        node = node->next;
-    }
-    return NULL;
-}
 
-// Add or update transition using hash table
-void addOperationTransitionHashed(CompleteOperation *from_op, CompleteOperation *to_op) {
-    // Check if transition already exists
-    TransitionHashNode *existing = findTransition(from_op, to_op);
+void addStarterOperationHashed(CompleteOperation *op) {
+
+    NGramHashNode *existing = findNGram(op, 1); // Reuse existing function
     if (existing != NULL) {
-        existing->transition.count++;
-        return;
-    }
+        unsigned int index = hashNGram(op, 1, STARTER_HASH_SIZE);
+        NGramHashNode *node = starter_hash_table[index];
 
-    // Create new transition node
-    TransitionHashNode *new_node = malloc(sizeof(TransitionHashNode));
-    if (new_node == NULL) {
-        fprintf(stderr, "Failed to allocate memory for transition hash node\n");
-        return;
-    }
-
-    // Initialize the transition
-    new_node->transition.from_op = *from_op;
-    new_node->transition.to_op = *to_op;
-    new_node->transition.count = 1;
-    new_node->transition.probability = 0.0;
-
-    // Insert at beginning of chain
-    unsigned int index = hashTransition(from_op, to_op);
-    new_node->next = transition_hash_table[index];
-    transition_hash_table[index] = new_node;
-
-    transition_count++;
-
-    if (transition_count >= MAX_TRANSITIONS) {
-        fprintf(stderr, "Warning: Approaching maximum transition limit (%d)\n", MAX_TRANSITIONS);
-    }
-}
-
-// Calculate probabilities directly from hash table
-void calculateTransitionProbabilitiesDirectly() {
-    // Count totals for each unique from_op
-    typedef struct {
-        CompleteOperation from_op;
-        int total_count;
-    } FromOpTotal;
-
-    FromOpTotal *from_totals = malloc(MAX_TRANSITIONS * sizeof(FromOpTotal));
-    int from_total_count = 0;
-
-    // Iterate through hash table to calculate totals
-    for (int i = 0; i < TRANSITION_HASH_SIZE; i++) {
-        TransitionHashNode *node = transition_hash_table[i];
         while (node != NULL) {
-            // Find or create total for this from_op
-            int found = 0;
-            for (int j = 0; j < from_total_count; j++) {
-                if (compareCompleteOps(&from_totals[j].from_op, &node->transition.from_op)) {
-                    from_totals[j].total_count += node->transition.count;
-                    found = 1;
-                    break;
-                }
-            }
-            if (!found && from_total_count < MAX_TRANSITIONS) {
-                from_totals[from_total_count].from_op = node->transition.from_op;
-                from_totals[from_total_count].total_count = node->transition.count;
-                from_total_count++;
+            if (node->ngram.op_count == 1 &&
+                compareCompleteOps(&node->ngram.ops[0], op)) {
+                node->ngram.frequency++;
+                return;
             }
             node = node->next;
         }
     }
 
-    // Now calculate probabilities
-    for (int i = 0; i < TRANSITION_HASH_SIZE; i++) {
-        TransitionHashNode *node = transition_hash_table[i];
+    NGramHashNode *new_node = malloc(sizeof(NGramHashNode));
+    if (new_node == NULL) {
+        fprintf(stderr, "Failed to allocate memory for starter hash node\n");
+        return;
+    }
+
+    new_node->ngram.op_count = 1;
+    new_node->ngram.ops[0] = *op;
+    new_node->ngram.frequency = 1;
+
+    unsigned int index = hashNGram(op, 1, STARTER_HASH_SIZE);
+    new_node->next = starter_hash_table[index];
+    starter_hash_table[index] = new_node;
+
+    starter_count++;
+}
+
+void calculateBigramProbabilities() {
+    // Count totals for each unique from_op (first operation in bigram)
+    typedef struct {
+        CompleteOperation from_op;
+        int total_count;
+    } FromOpTotal;
+
+    FromOpTotal *from_totals = malloc(max_operation_count[2] * sizeof(FromOpTotal));
+    int from_total_count = 0;
+
+    // First pass: Calculate totals for each unique from_op
+    for (int i = 0; i < max_operation_count[2]; i++) {
+        NGramHashNode *node = bigram_hash_table[i];
         while (node != NULL) {
-            // Find the total for this from_op
-            for (int j = 0; j < from_total_count; j++) {
-                if (compareCompleteOps(&from_totals[j].from_op, &node->transition.from_op)) {
-                    node->transition.probability = (double)node->transition.count / from_totals[j].total_count;
-                    break;
+            // Only process bigrams (op_count == 2)
+            if (node->ngram.op_count == 2) {
+                // Find or create total for this from_op (ops[0])
+                int found = 0;
+                for (int j = 0; j < from_total_count; j++) {
+                    if (compareCompleteOps(&from_totals[j].from_op, &node->ngram.ops[0])) {
+                        from_totals[j].total_count += node->ngram.frequency;
+                        found = 1;
+                        break;
+                    }
+                }
+                if (!found && from_total_count < max_operation_count[2]) {
+                    from_totals[from_total_count].from_op = node->ngram.ops[0];
+                    from_totals[from_total_count].total_count = node->ngram.frequency;
+                    from_total_count++;
+                }
+            }
+            node = node->next;
+        }
+    }
+
+    // Second pass: Calculate probabilities for each bigram
+    for (int i = 0; i < max_operation_count[2]; i++) {
+        NGramHashNode *node = bigram_hash_table[i];
+        while (node != NULL) {
+            if (node->ngram.op_count == 2) {
+                // Find the total for this from_op (ops[0])
+                for (int j = 0; j < from_total_count; j++) {
+                    if (compareCompleteOps(&from_totals[j].from_op, &node->ngram.ops[0])) {
+                        node->ngram.probability = (double)node->ngram.frequency / from_totals[j].total_count;
+                        break;
+                    }
                 }
             }
             node = node->next;
@@ -221,36 +274,6 @@ void calculateTransitionProbabilitiesDirectly() {
     free(from_totals);
 }
 
-void printHashTableStats() {
-    int used_buckets = 0;
-    int max_chain_length = 0;
-    int total_nodes = 0;
-
-    for (int i = 0; i < TRANSITION_HASH_SIZE; i++) {
-        if (transition_hash_table[i] != NULL) {
-            used_buckets++;
-            int chain_length = 0;
-            TransitionHashNode *node = transition_hash_table[i];
-            while (node != NULL) {
-                chain_length++;
-                total_nodes++;
-                node = node->next;
-            }
-            if (chain_length > max_chain_length) {
-                max_chain_length = chain_length;
-            }
-        }
-    }
-
-    fprintf(stderr, "Hash table stats:\n");
-    fprintf(stderr, "  Total transitions: %d\n", total_nodes);
-    fprintf(stderr, "  Used buckets: %d/%d (%.2f%%)\n",
-            used_buckets, TRANSITION_HASH_SIZE,
-            100.0 * used_buckets / TRANSITION_HASH_SIZE);
-    fprintf(stderr, "  Max chain length: %d\n", max_chain_length);
-    fprintf(stderr, "  Average chain length: %.2f\n",
-            used_buckets > 0 ? (double)total_nodes / used_buckets : 0.0);
-}
 
 NGramHashNode* findNGram(CompleteOperation *ops, long op_count) {
     NGramHashNode **hash_table;
@@ -260,15 +283,15 @@ NGramHashNode* findNGram(CompleteOperation *ops, long op_count) {
     switch (op_count) {
         case 1:
             hash_table = unigram_hash_table;
-            hash_size = UNIGRAM_HASH_SIZE;
+            hash_size = max_operation_count[1];
             break;
         case 2:
             hash_table = bigram_hash_table;
-            hash_size = BIGRAM_HASH_SIZE;
+            hash_size = max_operation_count[2];
             break;
         case 3:
             hash_table = trigram_hash_table;
-            hash_size = TRIGRAM_HASH_SIZE;
+            hash_size = max_operation_count[3];
             break;
         default:
             return NULL; // Unsupported n-gram size
@@ -295,6 +318,66 @@ NGramHashNode* findNGram(CompleteOperation *ops, long op_count) {
     return NULL;
 }
 
+static int resizeHT(int op_count){
+    int old_size = max_operation_count[op_count];
+
+    if (prime_sizes[op_prime_idx[op_count]+1] == 0)
+    {
+        fprintf(stderr,"Warning: Maximum hashtable size reached... Exiting\n");
+        return 0;
+    }
+
+    op_prime_idx[op_count]++;
+    int new_size = prime_sizes[op_prime_idx[op_count]];
+
+    // Alloc new table
+    NGramHashNode ** new_HashMap = calloc(new_size, sizeof(NGramHashNode*));
+    if (!new_HashMap){
+        fprintf(stderr,"Error: Failed to allocate memory for hash map");
+        return 0;
+    }
+
+    max_operation_count[op_count] = new_size;
+    NGramHashNode ** old_HashMap;
+    if (op_count == 2){
+        old_HashMap = bigram_hash_table;
+        bigram_hash_table = new_HashMap;
+    }
+    else if(op_count == 3){
+         old_HashMap = trigram_hash_table;
+         trigram_hash_table = new_HashMap;
+    }
+    else{
+        fprintf(stderr,"Error, something when wrong resizing hash map with %d ops",op_count);
+        free(new_HashMap);
+        return 0;
+    }
+
+    //Rehash
+
+    int rehash_count = 0;
+    for (int i=0; i<old_size; i++)
+    {
+        NGramHashNode * node = old_HashMap[i];
+        while(node != NULL){
+            NGramHashNode * next = node->next;
+            unsigned int new_idx = hashNGram(node->ngram.ops,
+                               node->ngram.op_count,
+                               new_size);
+            node->next = new_HashMap[new_idx];
+            new_HashMap[new_idx] = node;
+            rehash_count++;
+            node=next;
+
+        }
+    }
+
+    free(old_HashMap);
+    fprintf(stderr,"Hash map resized: %d -> %d buckets, rehashed %d\n",old_size,new_size,rehash_count);
+
+    return 1;
+}
+
 void addOperationNGramHashed(CompleteOperation *ops, long op_count, long *count, long max_count) {
     // Check if n-gram already exists
     NGramHashNode *existing = findNGram(ops, op_count);
@@ -303,19 +386,16 @@ void addOperationNGramHashed(CompleteOperation *ops, long op_count, long *count,
         return;
     }
 
-    // Check if we've hit the maximum count
-    if (*count >= max_count) {
-        return;  // Skip adding new n-grams if at capacity
+    if (op_count > 1)
+    {
+        if (*count >= (max_operation_count[op_count]  * 0.8)) {
+            if(!resizeHT(op_count)){
+                fprintf(stderr,"Warning: Hash table resize failed");
+            }
+        }
     }
 
-    // Create new n-gram node
-    NGramHashNode *new_node = malloc(sizeof(NGramHashNode));
-    if (new_node == NULL) {
-        fprintf(stderr, "Failed to allocate memory for n-gram hash node\n");
-        return;
-    }
-
-    // Initialize the n-gram
+    NGramHashNode *new_node = allocateNGramNode(); //Request from pool of nodes
     new_node->ngram.op_count = op_count;
     for (long i = 0; i < op_count; i++) {
         new_node->ngram.ops[i] = ops[i];
@@ -333,14 +413,14 @@ void addOperationNGramHashed(CompleteOperation *ops, long op_count, long *count,
             break;
         case 2:
             hash_table = bigram_hash_table;
-            hash_size = BIGRAM_HASH_SIZE;
+            hash_size = max_operation_count[op_count];
             break;
         case 3:
             hash_table = trigram_hash_table;
-            hash_size = TRIGRAM_HASH_SIZE;
+            hash_size = max_operation_count[op_count];
             break;
         default:
-            free(new_node);
+            //free(new_node);
             return; // Unsupported n-gram size
     }
 
@@ -352,38 +432,17 @@ void addOperationNGramHashed(CompleteOperation *ops, long op_count, long *count,
 }
 
 void addUnigramHashed(CompleteOperation *op) {
-    addOperationNGramHashed(op, 1, &unigram_count, MAX_OPERATIONS);
+    addOperationNGramHashed(op, 1, &unigram_count, max_operation_count[1]);
 }
 
 void addBigramHashed(CompleteOperation *ops) {
-    addOperationNGramHashed(ops, 2, &bigram_count, MAX_OPERATIONS);
+    addOperationNGramHashed(ops, 2, &bigram_count, max_operation_count[2]);
 }
 
 void addTrigramHashed(CompleteOperation *ops) {
-    addOperationNGramHashed(ops, 3, &trigram_count, MAX_OPERATIONS);
+    addOperationNGramHashed(ops, 3, &trigram_count, max_operation_count[3]);
 }
 
-int ruleExists(char *rule_string) {
-    unsigned int index = hash(rule_string);
-    HashNode *node = hash_table[index];
 
-    while (node != NULL) {
-        if (strcmp(node->rule_string, rule_string) == 0) {
-            return 1;
-        }
-        node = node->next;
-    }
-    return 0;
-}
-
-void addRuleToHash(char *rule_string) {
-    if (ruleExists(rule_string)) return;
-
-    unsigned int index = hash(rule_string);
-    HashNode *new_node = malloc(sizeof(HashNode));
-    strcpy(new_node->rule_string, rule_string);
-    new_node->next = hash_table[index];
-    hash_table[index] = new_node;
-}
 
 //

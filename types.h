@@ -6,15 +6,16 @@
 #include <string.h>
 
 // Constants
+#define STARTER_HASH_SIZE 1048573
+#define K_SMOOTHING_FACTOR 1
 #define MAX_RULE_LEN 80
-#define MAX_TRANSITIONS 1048573
+
 #define MAX_OPERATIONS 512 * 512
 #define WriteBufferSize 10240000
-#define TRANSITION_HASH_SIZE 1048573
 #define UNIGRAM_HASH_SIZE 1048573
-#define BIGRAM_HASH_SIZE 1048573
-#define TRIGRAM_HASH_SIZE 1048573
+
 #define HASH_SIZE 65536
+#define POOL_BLOCK_SIZE 65536
 
 // Core data structures
 typedef struct {
@@ -26,8 +27,16 @@ typedef struct {
 typedef struct {
     CompleteOperation ops[3]; // Max is trigrams
     int op_count;
-    int frequency;
+    long frequency;
+    double probability;
 } OperationNGram;
+
+typedef struct {
+    CompleteOperation op;
+    long starter_frequency;
+    long total_frequency;
+    double smoothed_probability;
+} StarterOperationWithSmoothing;
 
 typedef struct {
     CompleteOperation from_op;
@@ -57,11 +66,7 @@ typedef struct {
     char rule_string[MAX_RULE_LEN];
 } GeneratedRule;
 
-// Hash table structures
-typedef struct TransitionHashNode {
-    OperationTransition transition;
-    struct TransitionHashNode *next;
-} TransitionHashNode;
+
 
 typedef struct NGramHashNode {
     OperationNGram ngram;
@@ -72,6 +77,14 @@ typedef struct HashNode {
     char rule_string[MAX_RULE_LEN];
     struct HashNode *next;
 } HashNode;
+
+
+typedef struct NodePool {
+    NGramHashNode *nodes;
+    long used_in_block;
+    long block_size;
+    struct NodePool *next_block;
+} NodePool;
 
 // Optimization structures
 typedef struct {
@@ -89,10 +102,12 @@ typedef struct {
 } FastTransitionLookup;
 
 // Global hash table declarations
-extern TransitionHashNode **transition_hash_table;
+
 extern NGramHashNode **unigram_hash_table;
 extern NGramHashNode **bigram_hash_table;
 extern NGramHashNode **trigram_hash_table;
 extern HashNode *hash_table[HASH_SIZE];
+extern NGramHashNode **starter_hash_table;
+extern long starter_count;
 
 #endif

@@ -1,9 +1,9 @@
 
 #include "buffer.h"
 #include "rule_parser.h"
-char singleR[] = "kKLR:lucCtrdf[]{}qM46Q~E0\"";
-char DoubleR[] = "Tp$^DzZ@<>!/()I+-,.RYyL'";
-char TripleR[] = "ios=mvSW3*xO";
+char singleR[] = "kK:lucCtrdf[]{}qM46Q~E0\"";
+char DoubleR[] = "Tp$^DzZ@<>!/()I+-,.RYyL'e";
+char TripleR[] = "ios=mvSW3*xO%";
 char QuadR[] = "XF\\";
 
 
@@ -121,10 +121,6 @@ int parseRuleIntoOperations(char *rule, ParsedRule *parsed) {
     }
 
     return 1;
-}
-
-int compareCompleteOps(const CompleteOperation *op1, const CompleteOperation *op2) {
-    return strcmp(op1->full_op, op2->full_op) == 0;
 }
 
 

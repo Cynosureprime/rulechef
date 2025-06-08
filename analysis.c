@@ -12,6 +12,9 @@ long unigram_count = 0;
 long bigram_count = 0;
 long trigram_count = 0;
 long transition_count = 0;
+long starter_count = 0;
+
+extern int max_operation_count[4];
 
 void analyseRuleStream(FILE *file, int verbose) {
     char line[MAX_RULE_LEN];
@@ -60,19 +63,25 @@ void analyseRuleStream(FILE *file, int verbose) {
             fprintf(stderr, "Processed %ld rules...\n", rule_count);
         }
 
-        // Incrementally build statistics using hash tables
+        // First (unigrams)
+        if (parsed.op_count > 0) {
+            addStarterOperationHashed(&parsed.operations[0]);
+        }
+
+        // Remaining (unigrams)
         for (int j = 0; j < parsed.op_count; j++) {
             addUnigramHashed(&parsed.operations[j]);
         }
 
         for (int j = 0; j < parsed.op_count - 1; j++) {
+
             CompleteOperation bigram_ops[2] = {parsed.operations[j], parsed.operations[j+1]};
             addBigramHashed(bigram_ops);
-            addOperationTransitionHashed(&parsed.operations[j], &parsed.operations[j+1]);
         }
 
-
+        /*
         for (int j = 0; j < parsed.op_count - 2; j++) {
+
             CompleteOperation trigram_ops[3] = {
                 parsed.operations[j],
                 parsed.operations[j+1],
@@ -80,26 +89,44 @@ void analyseRuleStream(FILE *file, int verbose) {
             };
             addTrigramHashed(trigram_ops);
         }
-
+        */
 
         if (rule_count % 50000 == 0) {
-            calculateTransitionProbabilitiesDirectly();
             if (verbose) {
                 double progress = ((double)f_readbytes/f_size)*100;
-                fprintf(stderr, "Current stats: %ld unigrams, %ld bigrams, %ld trigrams, %ld transitions, %.2f%%\n",
-                        unigram_count, bigram_count, trigram_count, transition_count,progress);
+                fprintf(stderr, "Current stats: %ld starters, %ld unigrams, %ld bigrams, %ld trigrams, %.2f%%\n",
+                        starter_count,unigram_count, bigram_count, trigram_count,  progress);
             }
         }
     }
 
-    calculateTransitionProbabilitiesDirectly();
+    calculateBigramProbabilities();
     if (verbose) {
         fprintf(stderr, "Analysis complete. Processed %ld rules\n", rule_count);
-        fprintf(stderr, "Final stats: %ld unigrams, %ld bigrams, %ld trigrams, %ld transitions\n",
-                unigram_count, bigram_count, trigram_count, transition_count);
+        fprintf(stderr, "Final stats: %ld starters, %ld unigrams, %ld bigrams, %ld trigrams\n",
+                starter_count, unigram_count, bigram_count, trigram_count);
     }
 }
 
+void printStarterOperationStats() {
+    fprintf(stderr, "\nTop Rule-Starting Operations:\n");
+
+    // Extract starters from hash table
+    int starter_total = 0;
+    OperationNGram *extracted_starters = extractNGramsFromHashTable(
+        starter_hash_table, STARTER_HASH_SIZE, 1, &starter_total);
+
+    if (extracted_starters != NULL && starter_total > 0) {
+        qsort(extracted_starters, starter_total, sizeof(OperationNGram), compareNGramsByFrequency);
+
+        int show_count = starter_total < 20 ? starter_total : 20;
+        for (int i = 0; i < show_count; i++) {
+            fprintf(stderr, "'%s': %ld occurrences as rule starter\n",
+                   extracted_starters[i].ops[0].full_op, extracted_starters[i].frequency);
+        }
+        free(extracted_starters);
+    }
+}
 
 // Print hash table statistics for all n-gram types
 static void printHashTableStatsForType(NGramHashNode **hash_table, int hash_size, const char *type) {
@@ -136,8 +163,8 @@ static void printHashTableStatsForType(NGramHashNode **hash_table, int hash_size
 
 void printAllNGramHashTableStats() {
     printHashTableStatsForType(unigram_hash_table, UNIGRAM_HASH_SIZE, "Unigram");
-    printHashTableStatsForType(bigram_hash_table, BIGRAM_HASH_SIZE, "Bigram");
-    printHashTableStatsForType(trigram_hash_table, TRIGRAM_HASH_SIZE, "Trigram");
+    printHashTableStatsForType(bigram_hash_table, max_operation_count[2], "Bigram");
+    printHashTableStatsForType(trigram_hash_table, max_operation_count[3], "Trigram");
 }
 
 
@@ -155,7 +182,7 @@ void printTopNGramsFromHashTable() {
         fprintf(stderr, "\nTop Complete Operations (Unigrams):\n");
         int show_count = unigram_total < 20 ? unigram_total : 20;
         for (int i = 0; i < show_count; i++) {
-            fprintf(stderr, "'%s': %d occurrences\n",
+            fprintf(stderr, "'%s': %ld occurrences\n",
                    extracted_unigrams[i].ops[0].full_op, extracted_unigrams[i].frequency);
         }
         free(extracted_unigrams);
@@ -164,7 +191,7 @@ void printTopNGramsFromHashTable() {
     // Print top bigrams
     int bigram_total = 0;
     OperationNGram *extracted_bigrams = extractNGramsFromHashTable(
-        bigram_hash_table, BIGRAM_HASH_SIZE, 2, &bigram_total);
+        bigram_hash_table, max_operation_count[2], 2, &bigram_total);
 
     if (extracted_bigrams != NULL && bigram_total > 0) {
         qsort(extracted_bigrams, bigram_total, sizeof(OperationNGram), compareNGramsByFrequency);
@@ -172,7 +199,7 @@ void printTopNGramsFromHashTable() {
         fprintf(stderr, "\nTop Operation Pairs (Bigrams):\n");
         int show_count = bigram_total < 15 ? bigram_total : 15;
         for (int i = 0; i < show_count; i++) {
-            fprintf(stderr, "'%s' -> '%s': %d occurrences\n",
+            fprintf(stderr, "'%s' -> '%s': %ld occurrences\n",
                    extracted_bigrams[i].ops[0].full_op, extracted_bigrams[i].ops[1].full_op,
                    extracted_bigrams[i].frequency);
         }
@@ -182,7 +209,7 @@ void printTopNGramsFromHashTable() {
     // Print top trigrams
     int trigram_total = 0;
     OperationNGram *extracted_trigrams = extractNGramsFromHashTable(
-        trigram_hash_table, TRIGRAM_HASH_SIZE, 3, &trigram_total);
+        trigram_hash_table, max_operation_count[3], 3, &trigram_total);
 
     if (extracted_trigrams != NULL && trigram_total > 0) {
         qsort(extracted_trigrams, trigram_total, sizeof(OperationNGram), compareNGramsByFrequency);
@@ -190,12 +217,14 @@ void printTopNGramsFromHashTable() {
         fprintf(stderr, "\nTop Operation Triplets (Trigrams):\n");
         int show_count = trigram_total < 10 ? trigram_total : 10;
         for (int i = 0; i < show_count; i++) {
-            fprintf(stderr, "'%s' -> '%s' -> '%s': %d occurrences\n",
+            fprintf(stderr, "'%s' -> '%s' -> '%s': %ld occurrences\n",
                    extracted_trigrams[i].ops[0].full_op, extracted_trigrams[i].ops[1].full_op,
                    extracted_trigrams[i].ops[2].full_op, extracted_trigrams[i].frequency);
         }
         free(extracted_trigrams);
     }
+
+    printStarterOperationStats();
 }
 
 
@@ -238,8 +267,4 @@ OperationNGram* extractNGramsFromHashTable(NGramHashNode **hash_table, int hash_
     return ngrams;
 }
 
-void calculateTransitionProbabilities() {
-    // Use the hash table version instead
-    calculateTransitionProbabilitiesDirectly();
-}
 

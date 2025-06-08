@@ -2,7 +2,7 @@
 CC ?= gcc
 CFLAGS = -Wall -Wextra -O2 -std=c99
 DEBUG_FLAGS = -g -DDEBUG
-LDFLAGS = -lm
+LDFLAGS = -lJudy -lm
 
 # Directories
 SRC_DIR = .
