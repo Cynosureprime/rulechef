@@ -1,4 +1,4 @@
-# Rule Chain Generator
+# RuleChef
 
 A powerful tool for analyzing and generating rule chains using Markov chains and probabilistic transitions. This application processes rule files to generate new valid rule combinations based on statistical analysis of existing rules.
 
@@ -37,7 +37,7 @@ The generator constructs new rules by:
 ## Basic Usage
 
 ```bash
-rule_chain_generator <rulefile1> [rulefile2] [options]
+rulechef <rulefile1> [rulefile2] [options]
 ```
 
 ## Command Line Options
