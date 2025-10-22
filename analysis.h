@@ -10,6 +10,5 @@ void analyseRuleStream(FILE *file, int verbose);
 int compareOperationNGrams(const void *a, const void *b);
 int compareOperationTransitions(const void *a, const void *b);
 
-
 void printAllNGramHashTableStats();
 #endif

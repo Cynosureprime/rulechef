@@ -4,6 +4,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdint.h>
+#define MIN_NGRAM_ORDER 1
+#define MAX_NGRAM_ORDER 10
+extern long ngram_count[MAX_NGRAM_ORDER +1];
+
 
 // Constants
 #define STARTER_HASH_SIZE 1048573
@@ -17,6 +22,7 @@
 #define HASH_SIZE 65536
 #define POOL_BLOCK_SIZE 65536
 
+
 // Core data structures
 typedef struct {
     char full_op[5]; // Longest rule is 4chars
@@ -24,19 +30,22 @@ typedef struct {
     char base_op;
 } CompleteOperation;
 
+
+typedef struct RuleCandidate {
+    CompleteOperation ops[MAX_RULE_LEN];
+    int length;
+    double probability;
+    struct RuleCandidate *next;
+} RuleCandidate;
+
+
 typedef struct {
-    CompleteOperation ops[3]; // Max is trigrams
+    CompleteOperation ops[MAX_NGRAM_ORDER + 1]; // Max is trigrams
     int op_count;
     long frequency;
     double probability;
 } OperationNGram;
 
-typedef struct {
-    CompleteOperation op;
-    long starter_frequency;
-    long total_frequency;
-    double smoothed_probability;
-} StarterOperationWithSmoothing;
 
 typedef struct {
     CompleteOperation from_op;
@@ -101,13 +110,7 @@ typedef struct {
     double min_probability;
 } FastTransitionLookup;
 
-// Global hash table declarations
 
-extern NGramHashNode **unigram_hash_table;
-extern NGramHashNode **bigram_hash_table;
-extern NGramHashNode **trigram_hash_table;
 extern HashNode *hash_table[HASH_SIZE];
-extern NGramHashNode **starter_hash_table;
-extern long starter_count;
 
 #endif

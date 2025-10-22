@@ -1,21 +1,24 @@
 
 #include "hash_tables.h"
 #include "rule_parser.h"
-
+#include <omp.h>
+#include <pthread.h>
+#include "hashmap.h"
 // Global hash tables
-NGramHashNode **unigram_hash_table = NULL;
-NGramHashNode **bigram_hash_table = NULL;
-NGramHashNode **trigram_hash_table = NULL;
 HashNode *hash_table[HASH_SIZE] = {NULL};
-NGramHashNode **starter_hash_table = NULL;
+NGramHashNode **ngram_hash_table[MAX_NGRAM_ORDER + 1];
+int hash_table_sizes[MAX_NGRAM_ORDER + 1];
 
-static double hm_threshold = 0.90; // Resize on 90% capcacity
-int curr_size_idx = 0;
-int max_operation_count[4];
-int op_prime_idx[4];
+extern long ngram_count[MAX_NGRAM_ORDER + 1];
+
+
+long curr_size_idx = 0;
+int max_operation_count[MAX_NGRAM_ORDER+1];
+long op_prime_idx[MAX_NGRAM_ORDER+1];
 
 //Pre-computed primes which roughly double
-static const int prime_sizes[] = {
+static const long prime_sizes[] = {
+    524287,
     1048573,
     2097143,
     4194301,
@@ -30,17 +33,18 @@ static const int prime_sizes[] = {
     0
 };
 
+static int pool_initialized = 0;
 static NodePool *ngram_pool = NULL;
 
-// Global counters
-extern long unigram_count;
-extern long bigram_count;
-extern long trigram_count;
-extern long transition_count;
-extern long start_counter;
+
 
 // Contiguous block of nodes for allocation
 void initNodePool() {
+
+    if (pool_initialized) {
+        return; // Already initialized
+    }
+
     ngram_pool = malloc(sizeof(NodePool));
     if (!ngram_pool) {
         fprintf(stderr, "Failed to allocate node pool\n");
@@ -56,6 +60,7 @@ void initNodePool() {
     ngram_pool->used_in_block = 0;
     ngram_pool->block_size = POOL_BLOCK_SIZE;
     ngram_pool->next_block = NULL;
+    pool_initialized = 1;
 }
 
 NGramHashNode* allocateNGramNode() {
@@ -90,84 +95,100 @@ NGramHashNode* allocateNGramNode() {
 }
 
 void initHashTables() {
-
-    // Possibly use a loop for larger tables, for now it's fine.
+    // Expand operation indices
     op_prime_idx[1] = 0;
-    op_prime_idx[2] = 0;
-    op_prime_idx[3] = 0;
+    op_prime_idx[0] = 0;
+
+    // Set initial sizes
+    max_operation_count[0] = STARTER_HASH_SIZE;
     max_operation_count[1] = UNIGRAM_HASH_SIZE;
-    max_operation_count[2] = prime_sizes[op_prime_idx[2]];
-    max_operation_count[3] = prime_sizes[op_prime_idx[3]];
 
-    unigram_hash_table = calloc(UNIGRAM_HASH_SIZE, sizeof(NGramHashNode*)); // Uneeded to be dynamic, not expected to hit cap
-    bigram_hash_table = calloc(max_operation_count[2], sizeof(NGramHashNode*));
-    trigram_hash_table = calloc(max_operation_count[3], sizeof(NGramHashNode*)); // Unused
-    starter_hash_table = calloc(STARTER_HASH_SIZE, sizeof(NGramHashNode*)); // Uneeded to be dynamic, not expected to hit cap
 
-    if (!unigram_hash_table || !bigram_hash_table ||
-        !trigram_hash_table || !starter_hash_table) {
-        fprintf(stderr, "Failed to allocate hash tables\n");
-        exit(1);
+    // Allocate hash tables
+    hash_table_sizes[0] = STARTER_HASH_SIZE;      // starter
+    hash_table_sizes[1] = UNIGRAM_HASH_SIZE;      // unigram
+    max_operation_count[0] = STARTER_HASH_SIZE;
+    max_operation_count[1] = UNIGRAM_HASH_SIZE;
+
+    // Allocate all hash tables
+    for (int i = 0; i < MAX_NGRAM_ORDER+1; i++) {
+
+        if (i > 1){
+            op_prime_idx[i] = 0;
+                max_operation_count[i] = prime_sizes[op_prime_idx[i]];
+            hash_table_sizes[i] = max_operation_count[i]; // bigram+
+        }
+
+        ngram_hash_table[i] = calloc(hash_table_sizes[i], sizeof(NGramHashNode*));
+        if (!ngram_hash_table[i]) {
+            fprintf(stderr, "Failed to allocate hash table %d\n", i);
+            exit(1);
+        }
     }
+
     initNodePool();
+
 }
 
-
-static void freeNGramHashTable(NGramHashNode **table, int size) {
+void freeNGramHashTable(NGramHashNode **table, int size) {
     if (table) {
         for (int i = 0; i < size; i++) {
-            NGramHashNode *node = table[i];
-            while (node) {
-                NGramHashNode *temp = node;
-                node = node->next;
-                free(temp);
-            }
+            table[i] = NULL;
         }
         free(table);
     }
 }
 
+void freeNodePool() {
+    NodePool *current = ngram_pool;
+    while (current != NULL) {
+        NodePool *temp = current;
+        current = current->next_block;
+        free(temp->nodes);
+        free(temp);
+    }
+    ngram_pool = NULL;
+}
 void freeHashTables() {
 
+   for (int i = 0; i < MAX_NGRAM_ORDER+1; i++) {
+        if (ngram_hash_table[i]) {
+            // Free chains for non-pooled nodes (like starters)
+            if (i == 0) {  // starter table uses malloc'd nodes
+                for (int j = 0; j < hash_table_sizes[i]; j++) {
+                    NGramHashNode *node = ngram_hash_table[i][j];
+                    while (node) {
+                        NGramHashNode *temp = node;
+                        node = node->next;
+                        free(temp);
+                    }
+                }
+            }
 
-    curr_size_idx = 0;
-
-    // Free n-gram hash tables using the helper function
-    freeNGramHashTable(unigram_hash_table, UNIGRAM_HASH_SIZE);
-    freeNGramHashTable(bigram_hash_table, max_operation_count[2]);
-    freeNGramHashTable(trigram_hash_table, max_operation_count[3]);
-    freeNGramHashTable(starter_hash_table, STARTER_HASH_SIZE);
-
-    // Set pointers to NULL after freeing
-    unigram_hash_table = NULL;
-    bigram_hash_table = NULL;
-    trigram_hash_table = NULL;
-    starter_hash_table = NULL;
-
-    // Free rule deduplication hash table
-    for (int i = 0; i < HASH_SIZE; i++) {
-        HashNode *node = hash_table[i];
-        while (node) {
-            HashNode *temp = node;
-            node = node->next;
-            free(temp);
+            free(ngram_hash_table[i]);
+            ngram_hash_table[i] = NULL;
         }
-        hash_table[i] = NULL; // Clear the bucket pointer
     }
-}
 
+    freeNodePool();
+    // Reset counters
+
+    for (int i =0; i<= MAX_NGRAM_ORDER; i++)
+    {
+        ngram_count[i] = 0;
+    }
+
+}
 
 
 unsigned int hashNGram(CompleteOperation *ops, long op_count, int hash_size) {
     unsigned int hash = 5381;
 
-    // Hash each operation in the n-gram
     for (long i = 0; i < op_count; i++) {
         const char *str = ops[i].full_op;
         while (*str) {
             hash = ((hash << 5) + hash) + *str++;
         }
-        // Add separator to distinguish position
         hash = ((hash << 5) + hash) + '|';
     }
 
@@ -184,13 +205,12 @@ unsigned int hash(char *str) {
 }
 
 
-
 void addStarterOperationHashed(CompleteOperation *op) {
 
-    NGramHashNode *existing = findNGram(op, 1); // Reuse existing function
+    NGramHashNode *existing = findNGram(op, 1);
     if (existing != NULL) {
         unsigned int index = hashNGram(op, 1, STARTER_HASH_SIZE);
-        NGramHashNode *node = starter_hash_table[index];
+        NGramHashNode *node = ngram_hash_table[0][index];
 
         while (node != NULL) {
             if (node->ngram.op_count == 1 &&
@@ -213,172 +233,211 @@ void addStarterOperationHashed(CompleteOperation *op) {
     new_node->ngram.frequency = 1;
 
     unsigned int index = hashNGram(op, 1, STARTER_HASH_SIZE);
-    new_node->next = starter_hash_table[index];
-    starter_hash_table[index] = new_node;
+    new_node->next = ngram_hash_table[0][index];
+    ngram_hash_table[0][index] = new_node;
 
-    starter_count++;
+    ngram_count[0]++;
 }
 
-void calculateBigramProbabilities() {
-    // Count totals for each unique from_op (first operation in bigram)
-    typedef struct {
-        CompleteOperation from_op;
-        int total_count;
-    } FromOpTotal;
+typedef struct {
+    CompleteOperation prefix[MAX_NGRAM_ORDER - 1];
+    int prefix_len;
+    long total_count;
+    pthread_mutex_t mutex;
+} ThreadSafePrefixTotal;
 
-    FromOpTotal *from_totals = malloc(max_operation_count[2] * sizeof(FromOpTotal));
-    int from_total_count = 0;
+// OpenMP parallelized version
+void calculateNGramProbabilitiesParallel(int ngram_order) {
+    if (ngram_order < 0 || ngram_order > MAX_NGRAM_ORDER) {
+        fprintf(stderr, "Error: Invalid n-gram order %d\n", ngram_order);
+        return;
+    }
 
-    // First pass: Calculate totals for each unique from_op
-    for (int i = 0; i < max_operation_count[2]; i++) {
-        NGramHashNode *node = bigram_hash_table[i];
-        while (node != NULL) {
-            // Only process bigrams (op_count == 2)
-            if (node->ngram.op_count == 2) {
-                // Find or create total for this from_op (ops[0])
-                int found = 0;
-                for (int j = 0; j < from_total_count; j++) {
-                    if (compareCompleteOps(&from_totals[j].from_op, &node->ngram.ops[0])) {
-                        from_totals[j].total_count += node->ngram.frequency;
-                        found = 1;
-                        break;
+    NGramHashNode **hash_table = ngram_hash_table[ngram_order];
+    int hash_size = max_operation_count[ngram_order];
+
+    if (!hash_table || ngram_count[ngram_order] == 0) {
+        return;
+    }
+
+    int prefix_len = ngram_order - 1;
+
+    // Use a hash map for thread-safe prefix totals
+    HashMap *prefix_totals_map = hashmap_create_with_size(hash_size);
+    if (!prefix_totals_map) {
+        fprintf(stderr, "Error: Failed to allocate prefix totals map\n");
+        return;
+    }
+
+    // PHASE 1: Parallel collection of prefix totals
+    #pragma omp parallel
+    {
+        // Thread-local temporary storage
+        HashMap *local_prefix_map = hashmap_create_with_size(1000);
+
+        // Parallel loop over hash buckets
+        #pragma omp for schedule(dynamic, 16)
+        for (int i = 0; i < hash_size; i++) {
+            NGramHashNode *node = hash_table[i];
+            while (node != NULL) {
+                if (node->ngram.op_count == ngram_order) {
+                    // Build prefix key
+                    char prefix_key[MAX_RULE_LEN];
+                    buildContextKey(node->ngram.ops, prefix_len, prefix_key);
+
+                    // Update local prefix total
+                    long *local_total = (long*)hashmap_get(local_prefix_map, prefix_key);
+                    if (local_total) {
+                        *local_total += node->ngram.frequency;
+                    } else {
+                        long new_total = node->ngram.frequency;
+                        hashmap_put(local_prefix_map, prefix_key, &new_total, sizeof(long));
                     }
                 }
-                if (!found && from_total_count < max_operation_count[2]) {
-                    from_totals[from_total_count].from_op = node->ngram.ops[0];
-                    from_totals[from_total_count].total_count = node->ngram.frequency;
-                    from_total_count++;
+                node = node->next;
+            }
+        }
+
+        // Merge local maps into global map (critical section)
+        #pragma omp critical
+        {
+            HashMapIterator *iter = hashmap_iterator(local_prefix_map);
+            while (hashmap_iter_has_next(iter)) {
+                HashMapEntry *entry = hashmap_iter_next(iter);
+                long *local_count = (long*)entry->value;
+
+                long *global_count = (long*)hashmap_get(prefix_totals_map, entry->key);
+                if (global_count) {
+                    *global_count += *local_count;
+                } else {
+                    long new_count = *local_count;
+                    hashmap_put(prefix_totals_map, entry->key, &new_count, sizeof(long));
+                }
+            }
+            hashmap_iterator_free(iter);
+        }
+
+        hashmap_free(local_prefix_map);
+    }
+
+    // PHASE 2: Parallel probability calculation
+    #pragma omp parallel for schedule(dynamic, 16)
+    for (int i = 0; i < hash_size; i++) {
+        NGramHashNode *node = hash_table[i];
+        while (node != NULL) {
+            if (node->ngram.op_count == ngram_order) {
+                // Build prefix key
+                char prefix_key[MAX_RULE_LEN];
+                buildContextKey(node->ngram.ops, prefix_len, prefix_key);
+
+                // Look up prefix total (read-only, no synchronization needed)
+                long *prefix_total = (long*)hashmap_get(prefix_totals_map, prefix_key);
+                if (prefix_total && *prefix_total > 0) {
+                    node->ngram.probability = (double)node->ngram.frequency / *prefix_total;
                 }
             }
             node = node->next;
         }
     }
 
-    // Second pass: Calculate probabilities for each bigram
-    for (int i = 0; i < max_operation_count[2]; i++) {
-        NGramHashNode *node = bigram_hash_table[i];
-        while (node != NULL) {
-            if (node->ngram.op_count == 2) {
-                // Find the total for this from_op (ops[0])
-                for (int j = 0; j < from_total_count; j++) {
-                    if (compareCompleteOps(&from_totals[j].from_op, &node->ngram.ops[0])) {
-                        node->ngram.probability = (double)node->ngram.frequency / from_totals[j].total_count;
-                        break;
-                    }
-                }
-            }
-            node = node->next;
-        }
-    }
-
-    free(from_totals);
+    hashmap_free(prefix_totals_map);
 }
 
 
 NGramHashNode* findNGram(CompleteOperation *ops, long op_count) {
-    NGramHashNode **hash_table;
-    int hash_size;
+     if (op_count < 1 || op_count > MAX_NGRAM_ORDER) {
+            return NULL;
+        }
 
-    // Select appropriate hash table based on n-gram size
-    switch (op_count) {
-        case 1:
-            hash_table = unigram_hash_table;
-            hash_size = max_operation_count[1];
-            break;
-        case 2:
-            hash_table = bigram_hash_table;
-            hash_size = max_operation_count[2];
-            break;
-        case 3:
-            hash_table = trigram_hash_table;
-            hash_size = max_operation_count[3];
-            break;
-        default:
-            return NULL; // Unsupported n-gram size
-    }
+        NGramHashNode **hash_table = ngram_hash_table[op_count];
+        int hash_size = hash_table_sizes[op_count];
 
-    unsigned int index = hashNGram(ops, op_count, hash_size);
-    NGramHashNode *node = hash_table[index];
+        unsigned int index = hashNGram(ops, op_count, hash_size);
+        NGramHashNode *node = hash_table[index];
 
-    while (node != NULL) {
-        if (node->ngram.op_count == op_count) {
-            int match = 1;
-            for (long j = 0; j < op_count; j++) {
-                if (!compareCompleteOps(&node->ngram.ops[j], &ops[j])) {
-                    match = 0;
-                    break;
+        while (node != NULL) {
+            if (node->ngram.op_count == op_count) {
+                int match = 1;
+                for (long j = 0; j < op_count; j++) {
+                    if (!compareCompleteOps(&node->ngram.ops[j], &ops[j])) {
+                        match = 0;
+                        break;
+                    }
+                }
+                if (match) {
+                    return node;
                 }
             }
-            if (match) {
-                return node;
-            }
+            node = node->next;
         }
-        node = node->next;
-    }
-    return NULL;
+        return NULL;
 }
 
-static int resizeHT(int op_count){
-    int old_size = max_operation_count[op_count];
+static long resizeHT(long op_count){
+    if (op_count < 2 || op_count > MAX_NGRAM_ORDER) {
+        fprintf(stderr,"Error: Invalid op_count %ld for resizing\n", op_count);
+        return 0;
+    }
 
-    if (prime_sizes[op_prime_idx[op_count]+1] == 0)
-    {
-        fprintf(stderr,"Warning: Maximum hashtable size reached... Exiting\n");
+    long old_size = max_operation_count[op_count];
+
+    if (prime_sizes[op_prime_idx[op_count]+1] == 0) {
+        fprintf(stderr,"Warning: Maximum hashtable size reached for %ld-grams... Cannot resize further\n", op_count);
         return 0;
     }
 
     op_prime_idx[op_count]++;
-    int new_size = prime_sizes[op_prime_idx[op_count]];
+    long new_size = prime_sizes[op_prime_idx[op_count]];
 
-    // Alloc new table
     NGramHashNode ** new_HashMap = calloc(new_size, sizeof(NGramHashNode*));
     if (!new_HashMap){
-        fprintf(stderr,"Error: Failed to allocate memory for hash map");
+        fprintf(stderr,"Error: Failed to allocate memory for %ld-gram hash map\n", op_count);
+        // Restore old index
+        op_prime_idx[op_count]--;
         return 0;
     }
 
     max_operation_count[op_count] = new_size;
-    NGramHashNode ** old_HashMap;
-    if (op_count == 2){
-        old_HashMap = bigram_hash_table;
-        bigram_hash_table = new_HashMap;
-    }
-    else if(op_count == 3){
-         old_HashMap = trigram_hash_table;
-         trigram_hash_table = new_HashMap;
-    }
-    else{
-        fprintf(stderr,"Error, something when wrong resizing hash map with %d ops",op_count);
-        free(new_HashMap);
-        return 0;
-    }
+    hash_table_sizes[op_count] = new_size;
 
-    //Rehash
+    // Store old hash table and assign new one
+    NGramHashNode ** old_HashMap = ngram_hash_table[op_count];
+    ngram_hash_table[op_count] = new_HashMap;
 
-    int rehash_count = 0;
-    for (int i=0; i<old_size; i++)
-    {
+    // Rehash all nodes
+    long rehash_count = 0;
+    for (long i = 0; i < old_size; i++) {
         NGramHashNode * node = old_HashMap[i];
         while(node != NULL){
             NGramHashNode * next = node->next;
-            unsigned int new_idx = hashNGram(node->ngram.ops,
+            long new_idx = hashNGram(node->ngram.ops,
                                node->ngram.op_count,
-                               new_size);
+                               new_size);  // Use new_size for rehashing
             node->next = new_HashMap[new_idx];
             new_HashMap[new_idx] = node;
             rehash_count++;
-            node=next;
-
+            node = next;
         }
     }
 
     free(old_HashMap);
-    fprintf(stderr,"Hash map resized: %d -> %d buckets, rehashed %d\n",old_size,new_size,rehash_count);
+
+    fprintf(stderr,"%ld-gram hash map resized: %ld -> %ld buckets, rehashed %ld\n",
+            op_count, old_size, new_size, rehash_count);
+
+
 
     return 1;
 }
 
-void addOperationNGramHashed(CompleteOperation *ops, long op_count, long *count, long max_count) {
+void addOperationNGramHashed(CompleteOperation *ops, long op_count, long count) {
+    if (op_count < 1 || op_count > MAX_NGRAM_ORDER) {
+        return; // Invalid n-gram size
+    }
+
+    // Direct array access - op_count maps directly to array index!
+    NGramHashNode **hash_table = ngram_hash_table[op_count];
+
     // Check if n-gram already exists
     NGramHashNode *existing = findNGram(ops, op_count);
     if (existing != NULL) {
@@ -386,61 +445,33 @@ void addOperationNGramHashed(CompleteOperation *ops, long op_count, long *count,
         return;
     }
 
-    if (op_count > 1)
-    {
-        if (*count >= (max_operation_count[op_count]  * 0.8)) {
-            if(!resizeHT(op_count)){
-                fprintf(stderr,"Warning: Hash table resize failed");
-            }
+    // Resize check for dynamic tables
+    if (op_count > 1 && count >= hash_table_sizes[op_count]) {
+        if (!resizeHT(op_count)) {
+            fprintf(stderr, "Warning: Hash table resize failed");
+        }
+        else
+        {
+            hash_table = ngram_hash_table[op_count];
+
         }
     }
 
-    NGramHashNode *new_node = allocateNGramNode(); //Request from pool of nodes
+    // Create new node
+    NGramHashNode *new_node = allocateNGramNode();
     new_node->ngram.op_count = op_count;
     for (long i = 0; i < op_count; i++) {
         new_node->ngram.ops[i] = ops[i];
     }
     new_node->ngram.frequency = 1;
 
-    // Select appropriate hash table and insert
-    NGramHashNode **hash_table;
-    int hash_size;
-
-    switch (op_count) {
-        case 1:
-            hash_table = unigram_hash_table;
-            hash_size = UNIGRAM_HASH_SIZE;
-            break;
-        case 2:
-            hash_table = bigram_hash_table;
-            hash_size = max_operation_count[op_count];
-            break;
-        case 3:
-            hash_table = trigram_hash_table;
-            hash_size = max_operation_count[op_count];
-            break;
-        default:
-            //free(new_node);
-            return; // Unsupported n-gram size
-    }
-
-    unsigned int index = hashNGram(ops, op_count, hash_size);
+    // Insert into hash table
+    unsigned long index = hashNGram(ops, op_count, hash_table_sizes[op_count]);
     new_node->next = hash_table[index];
     hash_table[index] = new_node;
 
-    (*count)++;
-}
-
-void addUnigramHashed(CompleteOperation *op) {
-    addOperationNGramHashed(op, 1, &unigram_count, max_operation_count[1]);
-}
-
-void addBigramHashed(CompleteOperation *ops) {
-    addOperationNGramHashed(ops, 2, &bigram_count, max_operation_count[2]);
-}
-
-void addTrigramHashed(CompleteOperation *ops) {
-    addOperationNGramHashed(ops, 3, &trigram_count, max_operation_count[3]);
+    ngram_count[op_count]++;
+    //(count)++;
 }
 
 

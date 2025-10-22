@@ -1,8 +1,8 @@
 # Compiler and flags
 CC ?= gcc
-CFLAGS = -Wall -Wextra -O2 -std=c99
+CFLAGS = -Wall -Wextra -O2 -fopenmp
 DEBUG_FLAGS = -g -DDEBUG
-LDFLAGS = -lJudy -lm
+LDFLAGS = -lJudy -lm -fopenmp
 
 # Directories
 SRC_DIR = .
@@ -13,13 +13,15 @@ BIN_DIR = .
 TARGET = rulechef
 
 # Source files
-SOURCES = main.c buffer.c rule_parser.c hash_tables.c analysis.c processor.c 
+SOURCES = main.c buffer.c rule_parser.c hash_tables.c analysis.c processor.c \
+          fastKN.c kn.c hashmap.c priority_queue.c
 
 # Object files
 OBJECTS = $(SOURCES:%.c=$(OBJ_DIR)/%.o)
 
 # Header files
-HEADERS = types.h buffer.h rule_parser.h hash_tables.h analysis.h processor.h 
+HEADERS = types.h buffer.h rule_parser.h hash_tables.h analysis.h processor.h \
+          fastKN.h kn.h hashmap.h priority_queue.h
 
 # Default target
 all: $(BIN_DIR)/$(TARGET)

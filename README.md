@@ -44,6 +44,11 @@ rulechef <rulefile1> [rulefile2] [options]
 
 ### Core Parameters
 
+* `-n N, --num-rules N`
+  - Sets the number of rules to generate
+  - KN-smoothing applied
+  - Rules are generated in ordered manner with highest probability outcomes first
+
 * `-m N, --min-length N`
   - Sets the minimum rule length (in operations)
   - Default: 1
@@ -98,31 +103,42 @@ rulechef <rulefile1> [rulefile2] [options]
   - Helps target specific rule complexity levels
   - Useful for balancing coverage vs performance
 
+## Build
+
+```bash
+make
+```
+
 ## Example Usage
 
-Basic rule generation with default settings:
+Basic rule generation with default settings (top counts first), generates 100k rules:
 ```bash
-rule_chain_generator rules.txt
+rulechef rules.txt -n 100000
+```
+
+Basic rule generation with default settings (procedurely exhaust):
+```bash
+rulechef rules.txt
 ```
 
 Generate shorter rules with high probability:
 ```bash
-rule_chain_generator rules.txt -M 4 -p 0.01
+rulechef rules.txt -M 4 -p 0.01
 ```
 
 Focus on common patterns with verbose output:
 ```bash
-rule_chain_generator rules.txt -M 3 -p 0.5 -v
+rulechef rules.txt -M 3 -p 0.5 -v
 ```
 
 Limit analysis to most frequent rules:
 ```bash 
-rule_chain_generator rules.txt -M 5 -l 200 -v
+rulechef rules.txt -M 5 -l 200 -v
 ```
 
 Process multiple rule files:
 ```bash
-rule_chain_generator rules1.txt rules2.txt -m 2 -M 5 -p 0.01
+rulechef rules1.txt rules2.txt -m 2 -M 5 -p 0.01
 ```
 
 ## Performance Considerations
@@ -144,6 +160,10 @@ rule_chain_generator rules1.txt rules2.txt -m 2 -M 5 -p 0.01
 - Maximum rule length is capped at 16 operations
 - Some operation combinations may be theoretically valid but practically unused
 - Very low probability thresholds may generate a large volume of output
+
+## Looking for an alternative?
+
+A similar tool exists developed in rust by 'justpretending' can be obtained here [rulechief](https://git.launchpad.net/rulechief) here
 
 ## Credits
 

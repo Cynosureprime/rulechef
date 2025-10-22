@@ -13,3 +13,4 @@ void flush_buffer(WBuffer *WStruct);
 size_t mystrlen2(const char *string, size_t max);
 
 #endif
+

@@ -4,20 +4,80 @@
 
 #include "hash_tables.h"
 #include "buffer.h"
+#include "kn.h"
 
+#include "fastKN.h"
 #define MAXLINE 1000000
 
+
 int counter = 0;
-static FastTransitionLookup *fast_lookup = NULL;
-static int fast_lookup_count = 0;
+FastTransitionLookup *fast_lookup = NULL;
+int fast_lookup_count = 0;
 
 
 Pvoid_t   PJArray = (PWord_t)NULL;
 PWord_t   PValue;
 Word_t    Bytes;
 uint8_t   Index[MAXLINE];
+long cap_rules = 0;
+long gen_rule_count = 0;
+static volatile int stop_gen = 0;
 
-extern int max_operation_count[4];
+extern int max_operation_count[MAX_NGRAM_ORDER+1];
+
+
+// Create a rule candidate
+RuleCandidate* createCandidate(CompleteOperation *ops, int length, double probability) {
+    RuleCandidate *candidate = malloc(sizeof(RuleCandidate));
+    if (!candidate) return NULL;
+
+    for (int i = 0; i < length; i++) {
+        candidate->ops[i] = ops[i];
+    }
+    candidate->length = length;
+    candidate->probability = probability;
+    candidate->next = NULL;
+
+    return candidate;
+}
+
+// Check if rule already exists using Judy array
+int isRuleDuplicate(CompleteOperation *ops, int length) {
+    char rule_string[MAX_RULE_LEN] = "";
+    int total_len = 0;
+
+    for (int i = 0; i < length; i++) {
+        int op_len = strlen(ops[i].full_op);
+        if (total_len + op_len >= MAX_RULE_LEN - 1) {
+            break;
+        }
+        strcat(rule_string, ops[i].full_op);
+        total_len += op_len;
+    }
+
+    JSLG(PValue, PJArray, (const uint8_t *)rule_string)
+    return (PValue != NULL);
+}
+
+// Mark rule as seen in Judy array
+void markRuleAsSeen(CompleteOperation *ops, int length) {
+    char rule_string[MAX_RULE_LEN] = "";
+    int total_len = 0;
+
+    for (int i = 0; i < length; i++) {
+        int op_len = strlen(ops[i].full_op);
+        if (total_len + op_len >= MAX_RULE_LEN - 1) {
+            break;
+        }
+        strcat(rule_string, ops[i].full_op);
+        total_len += op_len;
+    }
+
+    JSLI(PValue, PJArray, (const uint8_t *)rule_string);
+    ++(*PValue);
+}
+
+
 // Compare chains
 int compareTransitionsByProbability(const void *a, const void *b)
 {
@@ -211,7 +271,6 @@ int getNextOperations(CompleteOperation *current_op, CompleteOperation **next_op
             continue;
         }
 
-        // Add valid transition
         next_ops[*count] = lookup->sorted_transitions[i].next_op;
         next_probs[*count] = transition_prob;
         (*count)++;
@@ -220,11 +279,16 @@ int getNextOperations(CompleteOperation *current_op, CompleteOperation **next_op
     return *count;
 }
 
+
 // Optimised output function that doesn't recalculate probability
 void outputRule(CompleteOperation *ops, int length, int min_length,
                          double min_probability, double rule_probability,
                          WBuffer *output_buffer)
 {
+
+    if (stop_gen) {
+        return;
+    }
 
     if (length < min_length || (min_probability > 0.0 && rule_probability < min_probability))
     {
@@ -252,15 +316,27 @@ void outputRule(CompleteOperation *ops, int length, int min_length,
     }
 
 
-    JSLG(PValue,PJArray,rule_string)
+    JSLG(PValue,PJArray,(const uint8_t *)rule_string)
     if (PValue != NULL)
     {
         return;
     }
 
     buffer_string2(output_buffer, rule_string, MAX_RULE_LEN);
-    JSLI(PValue, PJArray, rule_string);
+    JSLI(PValue, PJArray, (const uint8_t *)rule_string);
     ++(*PValue);
+
+    if (cap_rules > 0)
+    {
+        gen_rule_count++;
+        if (gen_rule_count >= cap_rules)
+        {
+            flush_buffer(output_buffer);
+            stop_gen = 1; // Set flag instead of exit
+            return;
+        }
+    }
+
     // Periodic buffer flush
     if (output_buffer->writeCount % 1000 == 0)
     {
@@ -268,13 +344,14 @@ void outputRule(CompleteOperation *ops, int length, int min_length,
     }
 }
 
+
 OperationNGram *getSortedUnigramsFromHashTable(int *count, int limit_unigrams)
 {
     // Extract unigrams from hash table
     *count = 0;
     for (int i = 0; i < UNIGRAM_HASH_SIZE; i++)
     {
-        NGramHashNode *node = unigram_hash_table[i];
+        NGramHashNode *node = ngram_hash_table[1][i];
         while (node != NULL)
         {
             if (node->ngram.op_count == 1)
@@ -296,7 +373,7 @@ OperationNGram *getSortedUnigramsFromHashTable(int *count, int limit_unigrams)
     int index = 0;
     for (int i = 0; i < UNIGRAM_HASH_SIZE; i++)
     {
-        NGramHashNode *node = unigram_hash_table[i];
+        NGramHashNode *node = ngram_hash_table[1][i];
         while (node != NULL && index < *count)
         {
             if (node->ngram.op_count == 1)
@@ -320,14 +397,73 @@ OperationNGram *getSortedUnigramsFromHashTable(int *count, int limit_unigrams)
     return unigrams;
 }
 
+
+OperationNGram *getSortedStartersFromHashTable(int *count, int limit_unigrams)
+{
+    // Extract unigrams from hash table
+    *count = 0;
+    for (int i = 0; i < STARTER_HASH_SIZE; i++)
+    {
+        NGramHashNode *node = starter_hash_table[i];
+        while (node != NULL)
+        {
+            if (node->ngram.op_count == 1)
+            {
+                (*count)++;
+            }
+            node = node->next;
+        }
+    }
+
+    if (*count == 0)
+        return NULL;
+
+    // Allocate and fill array
+    OperationNGram *unigrams = malloc(*count * sizeof(OperationNGram));
+    if (unigrams == NULL)
+        return NULL;
+
+    int index = 0;
+    for (int i = 0; i < STARTER_HASH_SIZE; i++)
+    {
+        NGramHashNode *node = starter_hash_table[i];
+        while (node != NULL && index < *count)
+        {
+            if (node->ngram.op_count == 1)
+            {
+                unigrams[index] = node->ngram;
+                index++;
+            }
+            node = node->next;
+        }
+    }
+
+    // Sort by frequency (descending)
+    qsort(unigrams, *count, sizeof(OperationNGram), compareNGramsByFrequency);
+
+    // Apply limit if specified
+    if (limit_unigrams >= 1 && limit_unigrams < *count)
+    {
+        *count = limit_unigrams;
+    }
+
+    return unigrams;
+}
+
+
+
 // Recursive function
 void generateRules(CompleteOperation *current_sequence, int current_length,
                             int target_length, int max_depth, int min_length,
                             double min_probability, double current_probability, int verbose,
-                            OperationNGram *unigrams, int unigram_count,
+                            OperationNGram *unigrams, int ugram_count,
                             WBuffer *output_buffer,
                             double limit_unigrams)
 {
+
+    if (stop_gen) {
+        return;
+    }
 
     // Prevent infinite recursion
     if (current_length > max_depth || current_length > MAX_RULE_LEN)
@@ -358,7 +494,7 @@ void generateRules(CompleteOperation *current_sequence, int current_length,
     if (current_length == 0)
     {
 
-        int max_unigrams = unigram_count;
+        int max_unigrams = ngram_count[1];
 
         if (limit_unigrams >= 1)
             max_unigrams = limit_unigrams;
@@ -373,7 +509,7 @@ void generateRules(CompleteOperation *current_sequence, int current_length,
             current_sequence[0] = unigrams[i].ops[0];
             generateRules(current_sequence, 1, target_length, max_depth,
                                    min_length, min_probability, 1.0, verbose,
-                                   unigrams, unigram_count, output_buffer,
+                                   unigrams, ugram_count, output_buffer,
                                    limit_unigrams);
         }
         return;
@@ -389,6 +525,10 @@ void generateRules(CompleteOperation *current_sequence, int current_length,
 
     for (int i = 0; i < next_count; i++)
     {
+        if (stop_gen) {
+            break; // Exit loop cleanly
+        }
+
         double new_probability = current_probability * next_probs[i];
         // Skip if probability is too low
         if (min_probability > 0.0 && new_probability < min_probability)
@@ -402,7 +542,7 @@ void generateRules(CompleteOperation *current_sequence, int current_length,
         current_sequence[current_length] = *next_ops[i];
         generateRules(current_sequence, current_length + 1, target_length, max_depth,
                                min_length, min_probability, new_probability, verbose,
-                               unigrams, unigram_count, output_buffer,
+                               unigrams, ugram_count, output_buffer,
                                 limit_unigrams);
     }
 
@@ -411,9 +551,29 @@ void generateRules(CompleteOperation *current_sequence, int current_length,
 }
 
 void generateRulesFromHT(int max_length, int min_length, double min_probability, int verbose,
-                        WBuffer *output_buffer, long limit_unigrams) {
+                        WBuffer *output_buffer, long limit_unigrams, long num_rules) {
 
-  int starter_count_local = 0;
+    if (num_rules > 0) {
+
+        fprintf(stderr, "Using priority queue for rule generation...\n");
+
+        generateRulesKNSparsePQ(max_length, min_length, min_probability, verbose,
+               output_buffer, limit_unigrams, num_rules);
+
+    } else {
+        if (verbose) {
+            fprintf(stderr, "Using procedural generation for unlimited output\n");
+        }
+        generateRulesFromHTOriginal(max_length, min_length, min_probability, verbose,
+                                   output_buffer, limit_unigrams, num_rules);
+    }
+}
+
+void generateRulesFromHTOriginal(int max_length, int min_length, double min_probability, int verbose,
+                        WBuffer *output_buffer, long limit_unigrams, long num_rules) {
+
+    int starter_count_local = 0;
+    cap_rules = num_rules;
 
     OperationNGram *sorted_starters = getSortedStarterOperationsFromHT(&starter_count_local, limit_unigrams);
 
@@ -444,7 +604,7 @@ void generateRulesFromHT(int max_length, int min_length, double min_probability,
     }
 
     // Get bigram count instead of transition count
-    long bigram_transition_count = getBigramCountFromHashTable();
+    long bigram_transition_count = ngram_count[2];
 
     if (bigram_transition_count == 0) {
         fprintf(stderr, "Warning: No bigrams found - only single-operation rules possible\n");
@@ -568,23 +728,6 @@ OperationNGram *getSortedStarterOperationsFromHT(int *count, double limit_unigra
     return starters;
 }
 
-long getBigramCountFromHashTable()
-{
-    long count = 0;
-    for (int i = 0; i < max_operation_count[2]; i++)
-    {
-        NGramHashNode *node = bigram_hash_table[i];
-        while (node != NULL)
-        {
-            if (node->ngram.op_count == 2)
-            {
-                count++;
-            }
-            node = node->next;
-        }
-    }
-    return count;
-}
 
 void freeLookupTable(void)
 {
