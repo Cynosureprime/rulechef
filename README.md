@@ -106,6 +106,7 @@ rulechef <rulefile1> [rulefile2] [options]
 ## Build
 
 ```bash
+libjudy-dev (install via your package manager)
 make
 ```
 
